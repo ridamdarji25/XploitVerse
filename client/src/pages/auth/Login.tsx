@@ -79,7 +79,11 @@ const Login = () => {
       }
       navigate(from, { replace: true });
     } else {
-      setErrors((prev) => ({ ...prev, form: result.error }));
+      if (result.requiresVerification) {
+        navigate('/verify-otp', { state: { email: formData.email } });
+      } else {
+        setErrors((prev) => ({ ...prev, form: result.error }));
+      }
     }
   };
 

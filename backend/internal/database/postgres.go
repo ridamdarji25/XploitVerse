@@ -69,6 +69,8 @@ func RunPostgresMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		)`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token TEXT`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires TIMESTAMPTZ`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_otp TEXT`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_otp_expires TIMESTAMPTZ`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_uniq ON users (LOWER(email))`,
 		`CREATE INDEX IF NOT EXISTS users_password_reset_token_idx ON users (password_reset_token)`,
 

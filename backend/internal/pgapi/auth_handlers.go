@@ -24,6 +24,15 @@ var (
 	_ *config.Config
 )
 
+func generateOTP() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		return "123456"
+	}
+	num := (int(b[0])<<16 | int(b[1])<<8 | int(b[2])) % 1000000
+	return fmt.Sprintf("%06d", num)
+}
+
 func (a *API) Register(c *gin.Context) {
 	var body struct {
 		Username  string `json:"username" binding:"required,min=3,max=30"`
@@ -37,12 +46,72 @@ func (a *API) Register(c *gin.Context) {
 		return
 	}
 
-	var existingCount int
-	_ = a.DB.QueryRow(c.Request.Context(), `
-		SELECT COUNT(*) FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($2)
-	`, strings.TrimSpace(body.Email), strings.TrimSpace(body.Username)).Scan(&existingCount)
-	if existingCount > 0 {
-		writeErr(c, http.StatusBadRequest, "User with this email or username already exists")
+	cleanEmail := strings.ToLower(strings.TrimSpace(body.Email))
+	cleanUsername := strings.TrimSpace(body.Username)
+
+	var (
+		existingID       int64
+		existingVerified bool
+	)
+	err := a.DB.QueryRow(c.Request.Context(), `
+		SELECT id, is_email_verified FROM users
+		WHERE LOWER(email) = $1 OR LOWER(username) = LOWER($2)
+		LIMIT 1
+	`, cleanEmail, cleanUsername).Scan(&existingID, &existingVerified)
+
+	// If a user exists but never verified their OTP, allow them to re-register/refresh OTP
+	if err == nil {
+		if existingVerified {
+			writeErr(c, http.StatusBadRequest, "User with this email or username already exists")
+			return
+		}
+
+		// Update unverified user's credentials and issue fresh OTP
+		hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), 12)
+		if err != nil {
+			writeErr(c, http.StatusInternalServerError, "Failed to hash password")
+			return
+		}
+
+		otp := generateOTP()
+		hashedOTP := hashSHA256(otp)
+		otpExpires := time.Now().Add(10 * time.Minute)
+
+		_, err = a.DB.Exec(c.Request.Context(), `
+			UPDATE users SET
+				username = $1,
+				password_hash = $2,
+				first_name = $3,
+				last_name = $4,
+				verification_otp = $5,
+				verification_otp_expires = $6,
+				updated_at = now()
+			WHERE id = $7
+		`, cleanUsername, string(hash), strings.TrimSpace(body.FirstName), strings.TrimSpace(body.LastName), hashedOTP, otpExpires, existingID)
+		if err != nil {
+			log.Printf("❌ Failed to update registration record for %s (%s): %v", cleanUsername, cleanEmail, err)
+			writeErr(c, http.StatusInternalServerError, "Failed to update registration record: "+err.Error())
+			return
+		}
+
+		if a.EmailSvc != nil && a.EmailSvc.IsConfigured() {
+			go func(to, code, name string) {
+				if err := a.EmailSvc.SendVerificationOTP(to, code, name); err != nil {
+					log.Printf("❌ Failed to send verification OTP to %s: %v", to, err)
+				}
+			}(cleanEmail, otp, cleanUsername)
+		} else {
+			log.Printf("⚠️ SMTP not configured. Verification OTP for %s: %s", cleanEmail, otp)
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "Verification code dispatched to your email address",
+			"data": gin.H{
+				"email": cleanEmail,
+				"requiresVerification": true,
+			},
+		})
 		return
 	}
 
@@ -52,20 +121,96 @@ func (a *API) Register(c *gin.Context) {
 		return
 	}
 
+	otp := generateOTP()
+	hashedOTP := hashSHA256(otp)
+	otpExpires := time.Now().Add(10 * time.Minute)
+
 	var id int64
 	err = a.DB.QueryRow(c.Request.Context(), `
-		INSERT INTO users (username, email, password_hash, role, first_name, last_name)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO users (username, email, password_hash, role, first_name, last_name, is_email_verified, verification_otp, verification_otp_expires)
+		VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8)
 		RETURNING id
-	`, strings.TrimSpace(body.Username), strings.ToLower(strings.TrimSpace(body.Email)), string(hash), roleStudent, strings.TrimSpace(body.FirstName), strings.TrimSpace(body.LastName)).Scan(&id)
+	`, cleanUsername, cleanEmail, string(hash), roleStudent, strings.TrimSpace(body.FirstName), strings.TrimSpace(body.LastName), hashedOTP, otpExpires).Scan(&id)
 	if err != nil {
+		log.Printf("❌ Failed to insert user %s (%s): %v", cleanUsername, cleanEmail, err)
 		if pgUniqueViolation(err) {
 			writeErr(c, http.StatusBadRequest, "User with this email or username already exists")
 			return
 		}
-		writeErr(c, http.StatusInternalServerError, "Failed to create user")
+		writeErr(c, http.StatusInternalServerError, "Failed to create user: "+err.Error())
 		return
 	}
+
+	if a.EmailSvc != nil && a.EmailSvc.IsConfigured() {
+		go func(to, code, name string) {
+			if err := a.EmailSvc.SendVerificationOTP(to, code, name); err != nil {
+				log.Printf("❌ Failed to send verification OTP to %s: %v", to, err)
+			}
+		}(cleanEmail, otp, cleanUsername)
+	} else {
+		log.Printf("⚠️ SMTP not configured. Verification OTP for %s: %s", cleanEmail, otp)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"message": "Verification code dispatched to your email address",
+		"data": gin.H{
+			"email": cleanEmail,
+			"requiresVerification": true,
+		},
+	})
+}
+
+func (a *API) VerifyOTP(c *gin.Context) {
+	var body struct {
+		Email string `json:"email" binding:"required,email"`
+		OTP   string `json:"otp" binding:"required,min=4,max=8"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeErr(c, http.StatusBadRequest, "Email and OTP are required")
+		return
+	}
+
+	cleanEmail := strings.ToLower(strings.TrimSpace(body.Email))
+	hashedOTP := hashSHA256(body.OTP)
+
+	var (
+		id        int64
+		username  string
+		email     string
+		role      string
+		firstName string
+		lastName  string
+		active    bool
+	)
+	err := a.DB.QueryRow(c.Request.Context(), `
+		SELECT id, username, email, role, first_name, last_name, is_active
+		FROM users
+		WHERE email = $1
+			AND verification_otp = $2
+			AND verification_otp_expires IS NOT NULL
+			AND verification_otp_expires > now()
+	`, cleanEmail, hashedOTP).Scan(&id, &username, &email, &role, &firstName, &lastName, &active)
+	if err != nil {
+		writeErr(c, http.StatusBadRequest, "Invalid or expired verification code")
+		return
+	}
+
+	if !active {
+		writeErr(c, http.StatusUnauthorized, "User account has been deactivated")
+		return
+	}
+
+	now := time.Now()
+	_, _ = a.DB.Exec(c.Request.Context(), `
+		UPDATE users
+		SET is_email_verified = true,
+			verification_otp = NULL,
+			verification_otp_expires = NULL,
+			last_login = $1,
+			updated_at = $1
+		WHERE id = $2
+	`, now, id)
 
 	token, cookie, err := utils.CreateTokenResponse(strconv.FormatInt(id, 10), a.Cfg)
 	if err != nil {
@@ -74,20 +219,82 @@ func (a *API) Register(c *gin.Context) {
 	}
 	http.SetCookie(c.Writer, cookie)
 
-	c.JSON(http.StatusCreated, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": "Registration successful",
+		"message": "Account verified and authentication successful",
 		"data": gin.H{
 			"user": gin.H{
 				"id":        id,
-				"username":  strings.TrimSpace(body.Username),
-				"email":     strings.ToLower(strings.TrimSpace(body.Email)),
-				"role":      roleStudent,
-				"firstName": strings.TrimSpace(body.FirstName),
-				"lastName":  strings.TrimSpace(body.LastName),
+				"username":  username,
+				"email":     email,
+				"role":      role,
+				"firstName": firstName,
+				"lastName":  lastName,
+				"lastLogin": now,
 			},
 			"token": token,
 		},
+	})
+}
+
+func (a *API) ResendOTP(c *gin.Context) {
+	var body struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeErr(c, http.StatusBadRequest, "Valid email address is required")
+		return
+	}
+
+	cleanEmail := strings.ToLower(strings.TrimSpace(body.Email))
+
+	var (
+		id        int64
+		username  string
+		verified  bool
+	)
+	err := a.DB.QueryRow(c.Request.Context(), `
+		SELECT id, username, is_email_verified FROM users WHERE email = $1
+	`, cleanEmail).Scan(&id, &username, &verified)
+	if err != nil {
+		// Generic response to avoid email enumeration
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "If an account exists, a new verification code has been dispatched.",
+		})
+		return
+	}
+
+	if verified {
+		writeErr(c, http.StatusBadRequest, "This email is already verified. Please login.")
+		return
+	}
+
+	otp := generateOTP()
+	hashedOTP := hashSHA256(otp)
+	otpExpires := time.Now().Add(10 * time.Minute)
+
+	_, _ = a.DB.Exec(c.Request.Context(), `
+		UPDATE users
+		SET verification_otp = $1,
+			verification_otp_expires = $2,
+			updated_at = now()
+		WHERE id = $3
+	`, hashedOTP, otpExpires, id)
+
+	if a.EmailSvc != nil && a.EmailSvc.IsConfigured() {
+		go func(to, code, name string) {
+			if err := a.EmailSvc.SendVerificationOTP(to, code, name); err != nil {
+				log.Printf("❌ Failed to send verification OTP to %s: %v", to, err)
+			}
+		}(cleanEmail, otp, username)
+	} else {
+		log.Printf("⚠️ SMTP not configured. Verification OTP for %s: %s", cleanEmail, otp)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "A new verification code has been dispatched to your email address.",
 	})
 }
 
@@ -110,12 +317,13 @@ func (a *API) Login(c *gin.Context) {
 		firstName string
 		lastName  string
 		active    bool
+		verified  bool
 	)
 	err := a.DB.QueryRow(c.Request.Context(), `
-		SELECT id, username, email, password_hash, role, first_name, last_name, is_active
+		SELECT id, username, email, password_hash, role, first_name, last_name, is_active, is_email_verified
 		FROM users WHERE email = $1
 	`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(
-		&id, &username, &email, &passHash, &role, &firstName, &lastName, &active,
+		&id, &username, &email, &passHash, &role, &firstName, &lastName, &active, &verified,
 	)
 	if err != nil {
 		writeErr(c, http.StatusUnauthorized, "Invalid email or password")
@@ -127,6 +335,36 @@ func (a *API) Login(c *gin.Context) {
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(passHash), []byte(body.Password)); err != nil {
 		writeErr(c, http.StatusUnauthorized, "Invalid email or password")
+		return
+	}
+	if !verified {
+		// Generate fresh OTP so the user can verify immediately
+		otp := generateOTP()
+		hashedOTP := hashSHA256(otp)
+		otpExpires := time.Now().Add(10 * time.Minute)
+
+		_, _ = a.DB.Exec(c.Request.Context(), `
+			UPDATE users SET verification_otp=$1, verification_otp_expires=$2, updated_at=now() WHERE id=$3
+		`, hashedOTP, otpExpires, id)
+
+		if a.EmailSvc != nil && a.EmailSvc.IsConfigured() {
+			go func(to, code, name string) {
+				if err := a.EmailSvc.SendVerificationOTP(to, code, name); err != nil {
+					log.Printf("❌ Failed to send verification OTP to %s: %v", to, err)
+				}
+			}(email, otp, username)
+		} else {
+			log.Printf("⚠️ SMTP not configured. Verification OTP for %s: %s", email, otp)
+		}
+
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "Email address not verified. A verification code has been dispatched to your email.",
+			"data": gin.H{
+				"requiresVerification": true,
+				"email": email,
+			},
+		})
 		return
 	}
 

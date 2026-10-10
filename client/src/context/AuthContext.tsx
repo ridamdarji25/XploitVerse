@@ -58,9 +58,49 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setUser(newUser);
       }
 
-      return { success: true, user: newUser };
+      return {
+        success: true,
+        user: newUser,
+        token,
+        requiresVerification: response.requiresVerification,
+        email: response.email || userData.email,
+      };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Registration failed';
+      setError(message);
+      return { success: false, error: message };
+    }
+  };
+
+  const verifyOTP = async (email: string, otp: string): Promise<AuthResult> => {
+    try {
+      setError(null);
+      const response = await authService.verifyOTP(email, otp);
+      const verifiedUser = response.user;
+      const token = response.token;
+
+      if (token) {
+        localStorage.setItem('token', token);
+      }
+      if (verifiedUser) {
+        setUser(verifiedUser);
+      }
+
+      return { success: true, user: verifiedUser, token };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Verification failed';
+      setError(message);
+      return { success: false, error: message };
+    }
+  };
+
+  const resendOTP = async (email: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      setError(null);
+      await authService.resendOTP(email);
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to resend code';
       setError(message);
       return { success: false, error: message };
     }
@@ -81,10 +121,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
 
       return { success: true, user: newUser };
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Login failed';
+    } catch (err: any) {
+      const message = err?.message || 'Login failed';
       setError(message);
-      return { success: false, error: message };
+      const requiresVerification =
+        err?.response?.data?.data?.requiresVerification === true ||
+        err?.response?.status === 403;
+      return {
+        success: false,
+        error: message,
+        requiresVerification,
+        email: credentials.email,
+      };
     }
   };
 
@@ -117,6 +165,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     error,
     isAuthenticated: !!user,
     register,
+    verifyOTP,
+    resendOTP,
     login,
     logout,
     updateUser,

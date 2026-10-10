@@ -89,7 +89,11 @@ export function Register() {
     setLoading(false);
 
     if (result.success) {
-      navigate('/dashboard');
+      if (result.requiresVerification) {
+        navigate('/verify-otp', { state: { email: form.email } });
+      } else {
+        navigate('/dashboard');
+      }
     } else {
       setErrors({ form: result.error });
     }

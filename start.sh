@@ -109,9 +109,15 @@ check_dependencies() {
 
   # 5. Node.js & npm (source nvm if needed)
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    for nvm_dir in "$HOME/.nvm" "/home/*/.nvm"; do
+    for nvm_dir in "$HOME/.nvm" /home/*/.nvm /root/.nvm; do
+      if [ -d "${nvm_dir}/versions/node" ]; then
+        LATEST_NODE=$(ls -d "${nvm_dir}/versions/node"/v* 2>/dev/null | sort -V | tail -n1)
+        if [ -n "${LATEST_NODE}" ] && [ -d "${LATEST_NODE}/bin" ]; then
+          export PATH="${LATEST_NODE}/bin:$PATH"
+        fi
+      fi
       if [ -s "${nvm_dir}/nvm.sh" ]; then
-        export NVM_DIR="$(ls -d ${nvm_dir} 2>/dev/null | head -n1)"
+        export NVM_DIR="${nvm_dir}"
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
         break
       fi

@@ -46,6 +46,8 @@ func RegisterRoutes(r *gin.Engine, db *pgxpool.Pool, cfg *config.Config, dockerS
 	authGroup := v1.Group("/auth")
 	{
 		authGroup.POST("/register", authLimiter.Middleware(), api.Register)
+		authGroup.POST("/verify-otp", authLimiter.Middleware(), api.VerifyOTP)
+		authGroup.POST("/resend-otp", authLimiter.Middleware(), api.ResendOTP)
 		authGroup.POST("/login", authLimiter.Middleware(), api.Login)
 		authGroup.POST("/logout", api.Logout)
 		authGroup.GET("/me", auth, api.GetMe)

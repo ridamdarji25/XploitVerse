@@ -40,6 +40,25 @@ func TestRenderResetEmail(t *testing.T) {
 	}
 }
 
+func TestRenderOTPEmail(t *testing.T) {
+	html, err := renderOTPEmail("849201", "CipherChief")
+	if err != nil {
+		t.Fatalf("renderOTPEmail failed: %v", err)
+	}
+
+	if len(html) == 0 {
+		t.Errorf("Expected rendered HTML not to be empty")
+	}
+
+	if !containsSubstring(html, "849201") {
+		t.Errorf("Expected email to contain OTP 849201")
+	}
+
+	if !containsSubstring(html, "CipherChief") {
+		t.Errorf("Expected email to contain username 'CipherChief'")
+	}
+}
+
 func containsSubstring(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || searchSub(s, sub))
 }

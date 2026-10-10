@@ -38,6 +38,10 @@ export const flagService = {
 
 export const authService = {
   register: (userData: RegisterData) => apiClient.post<RegisterResponse>('/auth/register', userData),
+  verifyOTP: (email: string, otp: string) =>
+    apiClient.post<VerifyOTPResponse>('/auth/verify-otp', { email, otp }),
+  resendOTP: (email: string) =>
+    apiClient.post<{ success: boolean; message: string }>('/auth/resend-otp', { email }),
   login: (credentials: LoginCredentials) => apiClient.post<LoginResponse>('/auth/login', credentials),
   logout: () => apiClient.post<{ success: boolean; message: string }>('/auth/logout'),
   getMe: () => apiClient.get<MeResponse>('/auth/me'),

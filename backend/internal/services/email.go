@@ -47,6 +47,18 @@ func (s *EmailService) SendPasswordReset(toEmail, resetURL, userName string) err
 	return s.sendHTML(toEmail, subject, htmlBody)
 }
 
+// SendVerificationOTP sends a 6-digit registration verification code with styled HTML template.
+func (s *EmailService) SendVerificationOTP(toEmail, otp, userName string) error {
+	subject := "Your XploitVerse Verification Code"
+
+	htmlBody, err := renderOTPEmail(otp, userName)
+	if err != nil {
+		return fmt.Errorf("failed to render OTP email template: %w", err)
+	}
+
+	return s.sendHTML(toEmail, subject, htmlBody)
+}
+
 // sendHTML sends an HTML email via SMTP.
 func (s *EmailService) sendHTML(to, subject, htmlBody string) error {
 	from := s.Config.From
@@ -210,3 +222,87 @@ func renderResetEmail(resetURL, userName string) (string, error) {
 
 	return buf.String(), nil
 }
+
+const otpEmailTemplate = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;background-color:#0a0a1a;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0a0a1a;padding:40px 20px;">
+        <tr>
+            <td align="center">
+                <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1a1a2e;border-radius:12px;overflow:hidden;border:1px solid #2a2a4e;">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background:linear-gradient(135deg,#00ff88 0%,#3b82f6 100%);padding:30px;text-align:center;">
+                            <h1 style="margin:0;color:#0a0a1a;font-size:28px;font-weight:bold;">&#128274; XploitVerse</h1>
+                        </td>
+                    </tr>
+                    <!-- Body -->
+                    <tr>
+                        <td style="padding:40px 30px;">
+                            <h2 style="color:#ffffff;margin:0 0 10px;font-size:22px;">Confirm Your Security Clearance</h2>
+                            <p style="color:#9ca3af;margin:0 0 25px;font-size:15px;line-height:1.6;">
+                                Hi {{.UserName}}, welcome to XploitVerse! Enter the following One-Time Password (OTP) to verify your communications email and activate your account. This code expires in <strong style="color:#00ff88;">10 minutes</strong>.
+                            </p>
+                            <!-- OTP Box -->
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td align="center" style="padding:20px 0;">
+                                        <div style="display:inline-block;background:#0f0f23;border:2px dashed #00ff88;border-radius:10px;padding:16px 36px;letter-spacing:10px;color:#00ff88;font-size:32px;font-weight:bold;font-family:monospace;">
+                                            {{.OTP}}
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+                            <p style="color:#6b7280;font-size:13px;margin:20px 0 15px;line-height:1.5;">
+                                Never share this code with anyone. XploitVerse staff will never ask for your authentication key or OTP.
+                            </p>
+                            <hr style="border:none;border-top:1px solid #2a2a4e;margin:25px 0;">
+                            <p style="color:#6b7280;font-size:12px;margin:0;line-height:1.5;">
+                                If you did not create an account on XploitVerse, please disregard this transmission.
+                            </p>
+                        </td>
+                    </tr>
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color:#0f0f23;padding:20px 30px;text-align:center;">
+                            <p style="color:#4b5563;font-size:12px;margin:0;">
+                                XploitVerse — Interactive Cybersecurity Training Platform
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>`
+
+func renderOTPEmail(otp, userName string) (string, error) {
+	tmpl, err := template.New("otp").Parse(otpEmailTemplate)
+	if err != nil {
+		return "", err
+	}
+
+	if userName == "" {
+		userName = "Operative"
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, struct {
+		OTP      string
+		UserName string
+	}{
+		OTP:      otp,
+		UserName: userName,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
+}
+

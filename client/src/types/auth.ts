@@ -43,6 +43,8 @@ export interface AuthState {
   error: string | null;
   isAuthenticated: boolean;
   register: (userData: RegisterData) => Promise<AuthResult>;
+  verifyOTP: (email: string, otp: string) => Promise<AuthResult>;
+  resendOTP: (email: string) => Promise<{ success: boolean; error?: string }>;
   login: (credentials: LoginCredentials) => Promise<AuthResult>;
   logout: () => Promise<void>;
   updateUser: (userData: Partial<User>) => void;
@@ -69,9 +71,18 @@ export interface AuthResult {
   user?: User;
   token?: string;
   error?: string;
+  requiresVerification?: boolean;
+  email?: string;
 }
 
 export interface RegisterResponse {
+  email?: string;
+  requiresVerification?: boolean;
+  user?: User;
+  token?: string;
+}
+
+export interface VerifyOTPResponse {
   user: User;
   token: string;
 }
