@@ -95,15 +95,19 @@ func TerminalHandlerPG(db *pgxpool.Pool, cfg *config.Config) gin.HandlerFunc {
 			if s := os.Getenv("SHELL"); s != "" {
 				shell = s
 			}
-			if _, err := exec.LookPath(shell); err != nil {
-				cmd = exec.Command("cmd.exe")
-			} else {
+			if _, err := exec.LookPath(shell); err == nil {
 				cmd = exec.Command(shell)
+			} else if _, err := exec.LookPath("bash"); err == nil {
+				cmd = exec.Command("bash")
+			} else if _, err := exec.LookPath("powershell.exe"); err == nil {
+				cmd = exec.Command("powershell.exe", "-NoLogo")
+			} else {
+				cmd = exec.Command("cmd.exe")
 			}
 		} else {
 			cmd = exec.Command(
 				"docker", "exec", "-i", containerID,
-				"sh", "-lc", "if [ -x /bin/bash ]; then exec /bin/bash; else exec /bin/sh; fi",
+				"sh", "-lc", "if [ -x /bin/bash ]; then exec /bin/bash; elif [ -x /bin/sh ]; then exec /bin/sh; else exec sh; fi",
 			)
 		}
 

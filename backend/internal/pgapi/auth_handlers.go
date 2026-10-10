@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -269,10 +271,13 @@ func (a *API) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	var userID int64
+	var (
+		userID   int64
+		userName string
+	)
 	err := a.DB.QueryRow(c.Request.Context(), `
-		SELECT id FROM users WHERE email=$1
-	`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(&userID)
+		SELECT id, username FROM users WHERE email=$1
+	`, strings.ToLower(strings.TrimSpace(body.Email))).Scan(&userID, &userName)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
@@ -297,6 +302,19 @@ func (a *API) ForgotPassword(c *gin.Context) {
 	`, hashedToken, expiresAt, userID); err != nil {
 		writeErr(c, http.StatusInternalServerError, "Failed to persist reset token")
 		return
+	}
+
+	clientURL := strings.TrimRight(a.Cfg.ClientURL, "/")
+	resetURL := fmt.Sprintf("%s/reset-password/%s", clientURL, plainToken)
+
+	if a.EmailSvc != nil && a.EmailSvc.IsConfigured() {
+		go func(to, url, name string) {
+			if err := a.EmailSvc.SendPasswordReset(to, url, name); err != nil {
+				log.Printf("❌ Failed to send password reset email to %s: %v", to, err)
+			}
+		}(strings.TrimSpace(body.Email), resetURL, userName)
+	} else {
+		log.Printf("⚠️ SMTP not configured. Password reset link for %s: %s", body.Email, resetURL)
 	}
 
 	response := gin.H{

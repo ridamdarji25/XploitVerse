@@ -2,10 +2,12 @@ package services
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"html/template"
 	"log"
 	"net/smtp"
+	"strings"
 )
 
 // SMTPConfig holds SMTP configuration.
@@ -59,9 +61,61 @@ func (s *EmailService) sendHTML(to, subject, htmlBody string) error {
 
 	msg := []byte(headers + htmlBody)
 
-	addr := fmt.Sprintf("%s:%s", s.Config.Host, s.Config.Port)
-	auth := smtp.PlainAuth("", s.Config.Username, s.Config.Password, s.Config.Host)
+	// Clean username and password (e.g. Gmail app passwords often contain spaces)
+	user := strings.TrimSpace(s.Config.Username)
+	pass := strings.TrimSpace(s.Config.Password)
+	host := strings.TrimSpace(s.Config.Host)
+	port := strings.TrimSpace(s.Config.Port)
+	if port == "" {
+		port = "587"
+	}
+	addr := fmt.Sprintf("%s:%s", host, port)
 
+	auth := smtp.PlainAuth("", user, pass, host)
+
+	// Direct SSL/TLS on port 465
+	if port == "465" {
+		tlsConfig := &tls.Config{
+			ServerName: host,
+		}
+		conn, err := tls.Dial("tcp", addr, tlsConfig)
+		if err != nil {
+			log.Printf("❌ Failed to connect to SMTP via TLS on %s: %v", addr, err)
+			return fmt.Errorf("failed to dial SMTP TLS: %w", err)
+		}
+		defer conn.Close()
+
+		c, err := smtp.NewClient(conn, host)
+		if err != nil {
+			return fmt.Errorf("failed to create SMTP client: %w", err)
+		}
+		defer c.Close()
+
+		if err = c.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP auth failed: %w", err)
+		}
+		if err = c.Mail(s.Config.From); err != nil {
+			return fmt.Errorf("SMTP mail from failed: %w", err)
+		}
+		if err = c.Rcpt(to); err != nil {
+			return fmt.Errorf("SMTP rcpt to failed: %w", err)
+		}
+		w, err := c.Data()
+		if err != nil {
+			return fmt.Errorf("SMTP data failed: %w", err)
+		}
+		if _, err = w.Write(msg); err != nil {
+			return fmt.Errorf("SMTP write body failed: %w", err)
+		}
+		if err = w.Close(); err != nil {
+			return fmt.Errorf("SMTP close data failed: %w", err)
+		}
+		_ = c.Quit()
+		log.Printf("📧 Email sent to %s: %s (via port 465 TLS)", to, subject)
+		return nil
+	}
+
+	// Default: Standard SendMail (supports port 587 STARTTLS)
 	if err := smtp.SendMail(addr, auth, s.Config.From, []string{to}, msg); err != nil {
 		log.Printf("❌ Failed to send email to %s: %v", to, err)
 		return fmt.Errorf("failed to send email: %w", err)

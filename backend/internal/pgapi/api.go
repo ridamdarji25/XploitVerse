@@ -17,12 +17,21 @@ type API struct {
 	Cfg       *config.Config
 	DockerSvc *services.DockerService
 	RedisSvc  *services.RedisService
+	EmailSvc  *services.EmailService
 }
 
 // RegisterRoutes wires PostgreSQL-first routes according to new.md while
 // preserving existing client contract endpoints.
 func RegisterRoutes(r *gin.Engine, db *pgxpool.Pool, cfg *config.Config, dockerSvc *services.DockerService, redisSvc *services.RedisService) {
-	api := &API{DB: db, Cfg: cfg, DockerSvc: dockerSvc, RedisSvc: redisSvc}
+	emailSvc := services.NewEmailService(services.SMTPConfig{
+		Host:     cfg.SMTP.Host,
+		Port:     cfg.SMTP.Port,
+		Username: cfg.SMTP.Username,
+		Password: cfg.SMTP.Password,
+		From:     cfg.SMTP.From,
+		FromName: cfg.SMTP.FromName,
+	})
+	api := &API{DB: db, Cfg: cfg, DockerSvc: dockerSvc, RedisSvc: redisSvc, EmailSvc: emailSvc}
 	auth := VerifyToken(cfg, db)
 	authMax := 20
 	if cfg.NodeEnv != "production" {
