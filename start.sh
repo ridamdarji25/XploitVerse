@@ -107,7 +107,17 @@ check_dependencies() {
     exit 1
   fi
 
-  # 5. Node.js & npm
+  # 5. Node.js & npm (source nvm if needed)
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    for nvm_dir in "$HOME/.nvm" "/home/*/.nvm"; do
+      if [ -s "${nvm_dir}/nvm.sh" ]; then
+        export NVM_DIR="$(ls -d ${nvm_dir} 2>/dev/null | head -n1)"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        break
+      fi
+    done
+  fi
+
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
     log_err "Node.js or npm not detected. Required for local client execution."
     log_info "Install Node.js v18+ from https://nodejs.org/"
@@ -126,6 +136,15 @@ free_port_if_occupied() {
 
   if command -v lsof >/dev/null 2>&1; then
     pids=$(lsof -ti :"${port}" 2>/dev/null || true)
+  elif command -v fuser >/dev/null 2>&1; then
+    pids=$(fuser "${port}/tcp" 2>/dev/null || true)
+  elif command -v ss >/dev/null 2>&1; then
+    pids=$(ss -tlpn "( sport = :${port} )" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u || true)
+  fi
+
+  # Fallback for Go backend server binary if port 5000 is occupied
+  if [ -z "${pids}" ] && [ "${port}" = "5000" ]; then
+    pids=$(pgrep -f "bin/server" 2>/dev/null || true)
   fi
 
   if [ -n "${pids}" ]; then
